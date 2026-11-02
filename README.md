@@ -58,6 +58,16 @@ The repository documentation and source tree describe these areas:
 
 The presence of a component in the repository does not mean it is currently connected to the demo pipeline. Check the entry point before assuming an end-to-end integration.
 
+## Unit tests
+
+The deterministic decision policy has a standard-library test suite covering its current branches and threshold boundary. From the repository root, run:
+
+\`\`\`bash
+python -m unittest discover -s tests -v
+\`\`\`
+
+These tests verify the implemented rules; they do not validate model accuracy or real-world driving safety.
+
 ## Failure analysis
 
 The analysis script reads `analysis/decision_debug/summary.csv` and checks for the columns `gt_weather`, `pred_weather`, `confidence`, `trusted`, and `correct`.

@@ -2,12 +2,13 @@
 Weather Classification Inference Module
 ---------------------------------------
 Performs single-image weather classification using a fine-tuned ResNet-18.
-This module is intentionally deterministic and CPU-safe for reproducibility.
+
+CUDA is used automatically when available; CPU remains the fallback.
 """
 
 from pathlib import Path
-from PIL import Image
 
+from PIL import Image
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
@@ -20,10 +21,10 @@ from torchvision.models import resnet18
 
 MODEL_PATH = Path("models/weather/weather_resnet18_ft.pth")
 
-# Device selection (locked to CPU for reproducibility)
-DEVICE = torch.device("cpu")
+# Prefer the NVIDIA GPU when PyTorch can access CUDA.
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# MUST match training order exactly
+# MUST match the class order used when the checkpoint was trained.
 RAW_CLASSES = ["clear", "rainy", "snowy", "overcast", "night"]
 
 
@@ -36,16 +37,21 @@ _model = None
 
 def _load_model() -> torch.nn.Module:
     """
-    Loads the fine-tuned ResNet-18 model.
-    This function is called once and cached.
+    Load the fine-tuned ResNet-18 checkpoint and cache it on the selected device.
     """
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"Weather model not found: {MODEL_PATH}")
 
-    model = resnet18(pretrained=False)
+    # weights=None prevents torchvision from downloading pretrained ImageNet weights.
+    model = resnet18(weights=None)
     model.fc = torch.nn.Linear(model.fc.in_features, len(RAW_CLASSES))
 
-    state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
+    # The checkpoint is expected to be a plain state_dict of tensors.
+    state_dict = torch.load(
+        MODEL_PATH,
+        map_location=DEVICE,
+        weights_only=True,
+    )
     model.load_state_dict(state_dict)
 
     model.to(DEVICE)
@@ -64,14 +70,16 @@ def _get_model() -> torch.nn.Module:
 # PREPROCESSING
 # =========================
 
-_transform = T.Compose([
-    T.Resize((224, 224)),
-    T.ToTensor(),
-    T.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225],
-    ),
-])
+_transform = T.Compose(
+    [
+        T.Resize((224, 224)),
+        T.ToTensor(),
+        T.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        ),
+    ]
+)
 
 
 # =========================
@@ -80,8 +88,11 @@ _transform = T.Compose([
 
 def _canonicalize_label(raw_label: str) -> str:
     """
-    Maps raw classifier outputs into canonical weather classes.
-    This ensures downstream logic remains stable.
+    Map raw classifier outputs into the current downstream label set.
+
+    Note: the existing project currently maps both 'overcast' and 'night'
+    to 'clear'. This preserves the current behavior; the class semantics
+    should be reviewed separately before changing the mapping.
     """
     if raw_label in ("overcast", "night"):
         return "clear"
@@ -94,21 +105,23 @@ def _canonicalize_label(raw_label: str) -> str:
 
 def predict_weather(image_path: str) -> dict:
     """
-    Predicts weather condition for a single image.
+    Predict a weather condition for one image.
 
     Returns:
         {
-            label: canonical weather label
-            raw_label: original classifier output
-            confidence: softmax confidence
+            "label": canonical weather label,
+            "raw_label": original classifier output,
+            "confidence": softmax confidence
         }
     """
     model = _get_model()
 
-    img = Image.open(image_path).convert("RGB")
+    with Image.open(image_path) as image:
+        img = image.convert("RGB")
+
     x = _transform(img).unsqueeze(0).to(DEVICE)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         logits = model(x)
         probs = F.softmax(logits, dim=1)
 
